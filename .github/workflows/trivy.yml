@@ -1,0 +1,96 @@
+name: PHP Security & Web Scan
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  php-web-scan:
+    runs-on: ubuntu-latest
+    steps:
+      # ----------------------------
+      # Checkout
+      # ----------------------------
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      # ----------------------------
+      # Set up PHP 8.3 with extensions
+      # ----------------------------
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: mbstring, curl, json, xml, pdo_mysql, gd, intl, bcmath, zip, soap, readline, iconv, openssl, sockets, xmlwriter, tokenizer
+          coverage: none
+
+      # ----------------------------
+      # Install dependencies
+      # ----------------------------
+      - name: Install Composer dependencies
+        run: |
+          composer install --no-progress --no-interaction --prefer-dist
+
+      # ----------------------------
+      # PHPStan static analysis
+      # ----------------------------
+      - name: Run PHPStan
+        run: |
+          composer require --dev phpstan/phpstan
+          ./vendor/bin/phpstan analyse --error-format=github --level=max -c phpstan.neon
+          
+      # ----------------------------
+      # Psalm static analysis
+      # ----------------------------
+      - name: Run Psalm
+        run: |
+          composer require --dev vimeo/psalm
+          ./vendor/bin/psalm --show-info=false --output-format=github
+
+      # ----------------------------
+      # Trivy filesystem scan
+      # ----------------------------
+      - name: Scan PHP project with Trivy
+        uses: aquasecurity/trivy-action@v0.42.1
+        with:
+          scan-type: fs
+          ignore-unfixed: true
+          format: sarif
+          output: trivy-php-results.sarif
+          severity: CRITICAL,HIGH
+          exit-code: 1
+
+      - name: Upload Trivy SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-php-results.sarif
+
+      # ----------------------------
+      # OWASP ZAP Web Scan
+      # ----------------------------
+      - name: Start PHP built-in server
+        run: php -S 127.0.0.1:8080 -t public &
+
+      - name: Wait for server to start
+        run: sleep 5
+
+      - name: Run OWASP ZAP scan
+        uses: zaproxy/action-full-scan@v1
+        with:
+          target: 'http://127.0.0.1:8080'
+          format: 'sarif'
+          fail-on-risk: 'high'   # fail workflow on high risk
+          rules-file-name: ''    # optional, can自定义规则
+          out-file: 'owasp-zap-results.sarif'
+
+      - name: Upload OWASP ZAP SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: owasp-zap-results.sarif
